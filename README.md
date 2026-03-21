@@ -83,3 +83,20 @@ The pipeline is healthy when all of these are true:
 - Use `Jenkinsfile.verify` first to confirm checkout, script execution, test pass rate, JUnit publishing, and Allure reporting
 - Use `Jenkinsfile.image` next to verify artifact packaging and Podman image creation separately
 - Use `Jenkinsfile` only when you want the full end-to-end flow in one run
+
+## Multibranch pipeline behavior
+
+Use `Jenkinsfile` as the script path in a Jenkins Multibranch Pipeline job.
+
+- All branches run checkout, script execution, pytest, JUnit publishing, and Allure reporting
+- Only `main`, `release/*`, and `hotfix/*` branches run `Create Artifact` and `Build Podman Image`
+- Pull request branches and feature branches skip the image packaging stages
+- Saved image archives are branch-specific, for example `images/main-hello-artifact-image.tar`
+
+## Jenkins multibranch setup
+
+1. Create a `Multibranch Pipeline` job in Jenkins
+2. Add your GitHub repository as the branch source
+3. Keep the script path as `Jenkinsfile`
+4. Enable branch discovery and pull request discovery
+5. Run `Scan Multibranch Pipeline Now`
