@@ -1,5 +1,40 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            defaultContainer 'python'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 0
+  containers:
+  - name: python
+    image: python:3.12-slim
+    command:
+    - cat
+    tty: true
+  - name: podman
+    image: quay.io/podman/stable:latest
+    command:
+    - cat
+    tty: true
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: containers-storage
+      mountPath: /var/lib/containers
+    - name: tmp-storage
+      mountPath: /tmp
+  volumes:
+  - name: containers-storage
+    emptyDir: {}
+  - name: tmp-storage
+    emptyDir: {}
+'''
+        }
+    }
 
     options {
         skipDefaultCheckout(true)
@@ -7,9 +42,9 @@ pipeline {
     }
 
     environment {
-        PYTHON_BIN = "/usr/bin/python3"
-        PODMAN_BIN = "/opt/podman/bin/podman"
-        PODMAN_MACHINE = "jenkins-podman"
+        PYTHON_BIN = "python3"
+        PODMAN_BIN = "podman"
+        STORAGE_DRIVER = "vfs"
         WORK_DIR = "${WORKSPACE}/work"
         ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
         ARTIFACT_DIR = "${WORKSPACE}/artifacts"
@@ -20,7 +55,14 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                container('python') {
+                    sh '''
+                        set -euo pipefail
+                        apt-get update
+                        apt-get install -y git
+                    '''
+                    checkout scm
+                }
             }
         }
 
@@ -49,16 +91,15 @@ pipeline {
 
         stage('Build Podman Image') {
             steps {
-                sh '''
-                    set -euo pipefail
-                    if ! "${PODMAN_BIN}" --connection "${PODMAN_MACHINE}" info >/dev/null 2>&1; then
-                        "${PODMAN_BIN}" machine start "${PODMAN_MACHINE}"
-                    fi
-                    "${PODMAN_BIN}" --connection "${PODMAN_MACHINE}" info >/dev/null
-                    "${PODMAN_BIN}" --connection "${PODMAN_MACHINE}" build -t "${IMAGE_NAME}" -f Containerfile .
-                    "${PODMAN_BIN}" --connection "${PODMAN_MACHINE}" save -o "${IMAGE_DIR}/hello-artifact-image.tar" "${IMAGE_NAME}"
-                    ls -lh "${IMAGE_DIR}/hello-artifact-image.tar"
-                '''
+                container('podman') {
+                    sh '''
+                        set -euo pipefail
+                        "${PODMAN_BIN}" info >/dev/null
+                        "${PODMAN_BIN}" --storage-driver="${STORAGE_DRIVER}" build -t "${IMAGE_NAME}" -f Containerfile .
+                        "${PODMAN_BIN}" --storage-driver="${STORAGE_DRIVER}" save -o "${IMAGE_DIR}/hello-artifact-image.tar" "${IMAGE_NAME}"
+                        ls -lh "${IMAGE_DIR}/hello-artifact-image.tar"
+                    '''
+                }
             }
         }
     }

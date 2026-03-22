@@ -1,5 +1,22 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            defaultContainer 'python'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 0
+  containers:
+  - name: python
+    image: python:3.12-slim
+    command:
+    - cat
+    tty: true
+'''
+        }
+    }
 
     options {
         skipDefaultCheckout(true)
@@ -7,21 +24,26 @@ pipeline {
     }
 
     environment {
-        PYTHON_BIN = "/usr/bin/python3"
-        ALLURE_BIN = "/opt/homebrew/bin/allure"
+        PYTHON_BIN = "python3"
         VENV_DIR = "${WORKSPACE}/.venv"
         WORK_DIR = "${WORKSPACE}/work"
         ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
         REPORT_DIR = "${WORKSPACE}/reports"
         JUNIT_DIR = "${WORKSPACE}/reports/junit"
         ALLURE_RESULTS_DIR = "${WORKSPACE}/reports/allure-results"
-        ALLURE_HTML_DIR = "${WORKSPACE}/reports/allure-html"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                container('python') {
+                    sh '''
+                        set -euo pipefail
+                        apt-get update
+                        apt-get install -y git
+                    '''
+                    checkout scm
+                }
             }
         }
 
@@ -66,10 +88,6 @@ pipeline {
                     pytest -v \
                       --junitxml="${JUNIT_DIR}/results.xml" \
                       --alluredir="${ALLURE_RESULTS_DIR}"
-
-                    if [ -x "${ALLURE_BIN}" ]; then
-                        "${ALLURE_BIN}" generate "${ALLURE_RESULTS_DIR}" --clean -o "${ALLURE_HTML_DIR}"
-                    fi
                 '''
             }
         }
@@ -80,11 +98,11 @@ pipeline {
             junit testResults: 'reports/junit/results.xml', allowEmptyResults: false
             archiveArtifacts artifacts: 'reports/**/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
             script {
-                if (fileExists('reports/allure-results') && fileExists('/opt/homebrew/bin/allure')) {
+                if (fileExists('reports/allure-results')) {
                     try {
                         allure includeProperties: false, jdk: '', results: [[path: 'reports/allure-results']]
                     } catch (err) {
-                        echo "Allure Jenkins plugin is not available. HTML report was archived from reports/allure-html instead."
+                        echo "Allure Jenkins plugin is not available. Raw results were archived from reports/allure-results."
                     }
                 }
             }

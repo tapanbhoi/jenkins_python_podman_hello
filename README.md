@@ -1,6 +1,6 @@
 # Jenkins Python Podman Hello
 
-This project demonstrates a simple Jenkins pipeline flow:
+This project demonstrates a simple Jenkins pipeline flow on Jenkins Kubernetes cloud agents:
 
 1. Check out a Git repo containing `hello.py`
 2. Copy the script into the Jenkins agent workspace
@@ -34,7 +34,6 @@ After a successful run, Jenkins or the local script creates:
 - `images/hello-artifact-image.tar`
 - `reports/junit/results.xml`
 - `reports/allure-results/`
-- `reports/allure-html/index.html`
 
 ## Run locally
 
@@ -62,9 +61,18 @@ chmod +x scripts/run_image_flow.sh
 
 ## Jenkins pipeline setup
 
-Create a Jenkins Pipeline job and point it at this Git repo. Jenkins will run the `Jenkinsfile` automatically.
+Create a Jenkins Pipeline or Multibranch Pipeline job and point it at this Git repo. Jenkins will run the `Jenkinsfile` automatically.
 
-If Podman is not already running on macOS, the local script and the Jenkins pipeline both attempt `podman machine start` before building the image.
+The Jenkins pipeline files are written for Kubernetes cloud agents instead of static nodes:
+
+- `Jenkinsfile` uses a Kubernetes pod with `python` and `podman` containers
+- `Jenkinsfile.verify` uses a Kubernetes pod with a `python` container
+- `Jenkinsfile.image` uses a Kubernetes pod with `python` and `podman` containers
+- The pods run as root so the `python` container can install `git` before `checkout scm`
+- Podman image build steps run inside the `podman` container with the `vfs` storage driver
+- The podman container is configured as `privileged` and mounts `emptyDir` volumes for `/var/lib/containers` and `/tmp`
+- Allure raw results are archived and published through the Jenkins Allure plugin if it is installed
+- `Jenkinsfile` resolves the branch name from Jenkins multibranch metadata or Git checkout metadata so regular Pipeline jobs still package on `main`
 
 ## How to verify the pipeline
 
@@ -74,7 +82,7 @@ The pipeline is healthy when all of these are true:
 - Stage view shows `Run Script On Agent`, `Verify Script And Generate Test Reports`, `Create Artifact`, and `Build Podman Image` as green
 - Jenkins test result shows 2 passing tests
 - `reports/junit/results.xml` exists
-- `reports/allure-html/index.html` exists or the Jenkins Allure plugin publishes the report tab
+- `reports/allure-results/` exists and the Jenkins Allure plugin publishes the report tab if installed
 - `artifacts/hello-artifact.tar.gz` exists
 - `images/hello-artifact-image.tar` exists
 
