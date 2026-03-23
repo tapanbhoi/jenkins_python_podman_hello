@@ -1,4 +1,6 @@
 artifact-content/
+build-output/
+package-src/
 artifacts/
 images/
 reports/

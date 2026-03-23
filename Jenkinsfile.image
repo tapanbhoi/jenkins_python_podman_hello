@@ -7,11 +7,10 @@ pipeline {
     }
 
     environment {
-        PYTHON_BIN = "/usr/bin/python3"
         PODMAN_BIN = "/opt/podman/bin/podman"
         PODMAN_MACHINE = "podman-machine-default"
-        WORK_DIR = "${WORKSPACE}/work"
-        ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
+        BUILD_OUTPUT_DIR = "${WORKSPACE}/build-output"
+        PACKAGE_SRC_DIR = "${WORKSPACE}/package-src"
         ARTIFACT_DIR = "${WORKSPACE}/artifacts"
         IMAGE_DIR = "${WORKSPACE}/images"
         IMAGE_NAME = "local/hello-artifact:latest"
@@ -24,30 +23,68 @@ pipeline {
             }
         }
 
-        stage('Prepare Content') {
+        stage('Prepare Static Workspace') {
             steps {
                 sh '''
                     set -euo pipefail
-                    rm -rf "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}"
-                    mkdir -p "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}"
-                    cp hello.py "${WORK_DIR}/hello.py"
-                    "${PYTHON_BIN}" "${WORK_DIR}/hello.py" | tee "${ARTIFACT_CONTENT_DIR}/hello-output.txt"
-                    cp "${WORK_DIR}/hello.py" "${ARTIFACT_CONTENT_DIR}/hello.py"
+                    rm -rf "${BUILD_OUTPUT_DIR}" "${PACKAGE_SRC_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}"
+                    mkdir -p "${BUILD_OUTPUT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}"
                 '''
+                stash name: 'python-source', includes: 'hello.py', useDefaultExcludes: false
             }
         }
 
-        stage('Create Artifact') {
+        stage('Build On Kubernetes Agent') {
+            agent {
+                kubernetes {
+                    defaultContainer 'python'
+                    yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: python
+    image: python:3.12-slim
+    command:
+    - cat
+    tty: true
+'''
+                }
+            }
+            environment {
+                PYTHON_BIN = "python3"
+                BUILD_OUTPUT_DIR = "${WORKSPACE}/build-output"
+                PACKAGE_SRC_DIR = "${WORKSPACE}/package-src"
+            }
             steps {
+                deleteDir()
+                unstash 'python-source'
                 sh '''
                     set -euo pipefail
-                    tar -czf "${ARTIFACT_DIR}/hello-artifact.tar.gz" -C "${ARTIFACT_CONTENT_DIR}" .
+                    rm -rf "${BUILD_OUTPUT_DIR}" "${PACKAGE_SRC_DIR}"
+                    mkdir -p "${BUILD_OUTPUT_DIR}" "${PACKAGE_SRC_DIR}"
+
+                    "${PYTHON_BIN}" hello.py | tee "${BUILD_OUTPUT_DIR}/hello-output.txt"
+                    cp hello.py "${BUILD_OUTPUT_DIR}/hello.py"
+                    cp hello.py "${PACKAGE_SRC_DIR}/hello.py"
+                    "${PYTHON_BIN}" -m zipapp "${PACKAGE_SRC_DIR}" -m "hello:main" -o "${BUILD_OUTPUT_DIR}/hello-app.pyz"
+                '''
+                stash name: 'k8s-image-build-output', includes: 'build-output/**', useDefaultExcludes: false
+            }
+        }
+
+        stage('Collect Build Output') {
+            steps {
+                unstash 'k8s-image-build-output'
+                sh '''
+                    set -euo pipefail
+                    tar -czf "${ARTIFACT_DIR}/hello-artifact.tar.gz" -C "${BUILD_OUTPUT_DIR}" .
                     ls -lh "${ARTIFACT_DIR}/hello-artifact.tar.gz"
                 '''
             }
         }
 
-        stage('Build Podman Image') {
+        stage('Build Podman Image On Static Agent') {
             steps {
                 sh '''
                     set -euo pipefail
@@ -65,7 +102,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'artifacts/*,images/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'artifacts/*,images/*,build-output/**/*', fingerprint: true, allowEmptyArchive: true
         }
     }
 }
