@@ -1,5 +1,40 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            defaultContainer 'python'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 0
+  containers:
+  - name: python
+    image: python:3.12-slim
+    command:
+    - cat
+    tty: true
+  - name: podman
+    image: quay.io/podman/stable:latest
+    command:
+    - cat
+    tty: true
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: containers-storage
+      mountPath: /var/lib/containers
+    - name: tmp-storage
+      mountPath: /tmp
+  volumes:
+  - name: containers-storage
+    emptyDir: {}
+  - name: tmp-storage
+    emptyDir: {}
+'''
+        }
+    }
 
     options {
         skipDefaultCheckout(true)
@@ -8,10 +43,9 @@ pipeline {
     }
 
     environment {
-        PYTHON_BIN = "/usr/bin/python3"
-        PODMAN_BIN = "/opt/podman/bin/podman"
-        ALLURE_BIN = "/opt/homebrew/bin/allure"
-        PODMAN_MACHINE = "podman-machine-default"
+        PYTHON_BIN = "python3"
+        PODMAN_BIN = "podman"
+        STORAGE_DRIVER = "vfs"
         VENV_DIR = "${WORKSPACE}/.venv"
         WORK_DIR = "${WORKSPACE}/work"
         ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
@@ -20,14 +54,20 @@ pipeline {
         REPORT_DIR = "${WORKSPACE}/reports"
         JUNIT_DIR = "${WORKSPACE}/reports/junit"
         ALLURE_RESULTS_DIR = "${WORKSPACE}/reports/allure-results"
-        ALLURE_HTML_DIR = "${WORKSPACE}/reports/allure-html"
         IMAGE_REPO = "local/hello-artifact"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                container('python') {
+                    sh '''
+                        set -euo pipefail
+                        apt-get update
+                        apt-get install -y git
+                    '''
+                    checkout scm
+                }
             }
         }
 
@@ -100,10 +140,6 @@ pipeline {
                     pytest -v \
                       --junitxml="${JUNIT_DIR}/results.xml" \
                       --alluredir="${ALLURE_RESULTS_DIR}"
-
-                    if [ -x "${ALLURE_BIN}" ]; then
-                        "${ALLURE_BIN}" generate "${ALLURE_RESULTS_DIR}" --clean -o "${ALLURE_HTML_DIR}"
-                    fi
                 '''
             }
         }
@@ -126,18 +162,17 @@ pipeline {
                 expression { env.RUN_PACKAGE_STAGES == 'true' }
             }
             steps {
-                sh '''
-                    set -euo pipefail
-                    IMAGE_ARCHIVE="${IMAGE_DIR}/${SAFE_BRANCH_NAME}-hello-artifact-image.tar"
-                    if ! "${PODMAN_BIN}" info >/dev/null 2>&1; then
-                        "${PODMAN_BIN}" machine start "${PODMAN_MACHINE}"
-                    fi
-                    "${PODMAN_BIN}" info >/dev/null
-                    "${PODMAN_BIN}" build -t "${BRANCH_IMAGE_NAME}" -f Containerfile .
-                    "${PODMAN_BIN}" save -o "${IMAGE_ARCHIVE}" "${BRANCH_IMAGE_NAME}"
-                    printf '%s\n' "${BRANCH_IMAGE_NAME}" > "${IMAGE_DIR}/image-name.txt"
-                    ls -lh "${IMAGE_ARCHIVE}" "${IMAGE_DIR}/image-name.txt"
-                '''
+                container('podman') {
+                    sh '''
+                        set -euo pipefail
+                        IMAGE_ARCHIVE="${IMAGE_DIR}/${SAFE_BRANCH_NAME}-hello-artifact-image.tar"
+                        "${PODMAN_BIN}" info >/dev/null
+                        "${PODMAN_BIN}" --storage-driver="${STORAGE_DRIVER}" build -t "${BRANCH_IMAGE_NAME}" -f Containerfile .
+                        "${PODMAN_BIN}" --storage-driver="${STORAGE_DRIVER}" save -o "${IMAGE_ARCHIVE}" "${BRANCH_IMAGE_NAME}"
+                        printf '%s\n' "${BRANCH_IMAGE_NAME}" > "${IMAGE_DIR}/image-name.txt"
+                        ls -lh "${IMAGE_ARCHIVE}" "${IMAGE_DIR}/image-name.txt"
+                    '''
+                }
             }
         }
     }
@@ -145,18 +180,20 @@ pipeline {
     post {
         always {
             script {
-                if (fileExists('reports/junit/results.xml')) {
-                    junit testResults: 'reports/junit/results.xml', allowEmptyResults: false
-                }
-            }
-            archiveArtifacts artifacts: 'artifacts/*,images/*,reports/**/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
-            script {
-                if (fileExists('reports/allure-results')) {
-                    try {
-                        allure includeProperties: false, jdk: '', results: [[path: 'reports/allure-results']]
-                    } catch (err) {
-                        echo "Allure Jenkins plugin is not available. Raw results were archived from reports/allure-results."
+                if (getContext(hudson.FilePath)) {
+                    if (fileExists('reports/junit/results.xml')) {
+                        junit testResults: 'reports/junit/results.xml', allowEmptyResults: false
                     }
+                    archiveArtifacts artifacts: 'artifacts/*,images/*,reports/**/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
+                    if (fileExists('reports/allure-results')) {
+                        try {
+                            allure includeProperties: false, jdk: '', results: [[path: 'reports/allure-results']]
+                        } catch (err) {
+                            echo "Allure Jenkins plugin is not available. Raw results were archived from reports/allure-results."
+                        }
+                    }
+                } else {
+                    echo 'Skipping workspace post actions because no agent workspace was allocated.'
                 }
             }
         }

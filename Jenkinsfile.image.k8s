@@ -1,0 +1,118 @@
+pipeline {
+    agent {
+        kubernetes {
+            defaultContainer 'python'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsUser: 0
+  containers:
+  - name: python
+    image: python:3.12-slim
+    command:
+    - cat
+    tty: true
+  - name: podman
+    image: quay.io/podman/stable:latest
+    command:
+    - cat
+    tty: true
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: containers-storage
+      mountPath: /var/lib/containers
+    - name: tmp-storage
+      mountPath: /tmp
+  volumes:
+  - name: containers-storage
+    emptyDir: {}
+  - name: tmp-storage
+    emptyDir: {}
+'''
+        }
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    environment {
+        PYTHON_BIN = "python3"
+        PODMAN_BIN = "podman"
+        STORAGE_DRIVER = "vfs"
+        WORK_DIR = "${WORKSPACE}/work"
+        ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
+        ARTIFACT_DIR = "${WORKSPACE}/artifacts"
+        IMAGE_DIR = "${WORKSPACE}/images"
+        IMAGE_NAME = "local/hello-artifact:latest"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -euo pipefail
+                        apt-get update
+                        apt-get install -y git
+                    '''
+                    checkout scm
+                }
+            }
+        }
+
+        stage('Prepare Content') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    rm -rf "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}"
+                    mkdir -p "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}"
+                    cp hello.py "${WORK_DIR}/hello.py"
+                    "${PYTHON_BIN}" "${WORK_DIR}/hello.py" | tee "${ARTIFACT_CONTENT_DIR}/hello-output.txt"
+                    cp "${WORK_DIR}/hello.py" "${ARTIFACT_CONTENT_DIR}/hello.py"
+                '''
+            }
+        }
+
+        stage('Create Artifact') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    tar -czf "${ARTIFACT_DIR}/hello-artifact.tar.gz" -C "${ARTIFACT_CONTENT_DIR}" .
+                    ls -lh "${ARTIFACT_DIR}/hello-artifact.tar.gz"
+                '''
+            }
+        }
+
+        stage('Build Podman Image') {
+            steps {
+                container('podman') {
+                    sh '''
+                        set -euo pipefail
+                        "${PODMAN_BIN}" info >/dev/null
+                        "${PODMAN_BIN}" --storage-driver="${STORAGE_DRIVER}" build -t "${IMAGE_NAME}" -f Containerfile .
+                        "${PODMAN_BIN}" --storage-driver="${STORAGE_DRIVER}" save -o "${IMAGE_DIR}/hello-artifact-image.tar" "${IMAGE_NAME}"
+                        ls -lh "${IMAGE_DIR}/hello-artifact-image.tar"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                if (getContext(hudson.FilePath)) {
+                    archiveArtifacts artifacts: 'artifacts/*,images/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
+                } else {
+                    echo 'Skipping workspace post actions because no agent workspace was allocated.'
+                }
+            }
+        }
+    }
+}

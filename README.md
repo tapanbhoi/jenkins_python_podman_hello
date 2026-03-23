@@ -1,6 +1,6 @@
 # Jenkins Python Podman Hello
 
-This project demonstrates a simple Jenkins pipeline flow on Jenkins Kubernetes cloud agents:
+This project demonstrates a simple Jenkins pipeline flow on a local Jenkins static agent, with optional Kubernetes cloud-agent variants:
 
 1. Check out a Git repo containing `hello.py`
 2. Copy the script into the Jenkins agent workspace
@@ -17,6 +17,9 @@ This project demonstrates a simple Jenkins pipeline flow on Jenkins Kubernetes c
 - `Jenkinsfile`: declarative pipeline for Jenkins
 - `Jenkinsfile.verify`: verification-only pipeline for script execution and reports
 - `Jenkinsfile.image`: artifact and Podman image pipeline
+- `Jenkinsfile.k8s`: full pipeline for Jenkins Kubernetes cloud agents
+- `Jenkinsfile.verify.k8s`: verification-only pipeline for Kubernetes cloud agents
+- `Jenkinsfile.image.k8s`: artifact and image pipeline for Kubernetes cloud agents
 - `Containerfile`: image definition that packages the generated artifact content
 - `scripts/run_local_flow.sh`: local equivalent of the Jenkins stages
 - `scripts/run_verify_flow.sh`: local equivalent of the verification pipeline
@@ -63,16 +66,23 @@ chmod +x scripts/run_image_flow.sh
 
 Create a Jenkins Pipeline or Multibranch Pipeline job and point it at this Git repo. Jenkins will run the `Jenkinsfile` automatically.
 
-The Jenkins pipeline files are written for Kubernetes cloud agents instead of static nodes:
+The default Jenkins pipeline files are written for a local static Jenkins agent:
 
-- `Jenkinsfile` uses a Kubernetes pod with `python` and `podman` containers
-- `Jenkinsfile.verify` uses a Kubernetes pod with a `python` container
-- `Jenkinsfile.image` uses a Kubernetes pod with `python` and `podman` containers
-- The pods run as root so the `python` container can install `git` before `checkout scm`
-- Podman image build steps run inside the `podman` container with the `vfs` storage driver
-- The podman container is configured as `privileged` and mounts `emptyDir` volumes for `/var/lib/containers` and `/tmp`
-- Allure raw results are archived and published through the Jenkins Allure plugin if it is installed
+- `Jenkinsfile`, `Jenkinsfile.verify`, and `Jenkinsfile.image` run on `agent any`
+- They use the locally installed Python, Podman, and Allure CLI on this Mac
 - `Jenkinsfile` resolves the branch name from Jenkins multibranch metadata or Git checkout metadata so regular Pipeline jobs still package on `main`
+
+Use the `.k8s` variants only after a Kubernetes cloud is configured in Jenkins:
+
+- `Jenkinsfile.k8s`
+- `Jenkinsfile.verify.k8s`
+- `Jenkinsfile.image.k8s`
+
+The `.k8s` pipelines require:
+
+- a configured Kubernetes cloud in `Manage Jenkins -> Clouds`
+- a cluster policy that allows privileged Podman containers
+- outbound network access from the build pod
 
 ## How to verify the pipeline
 
@@ -108,3 +118,7 @@ Use `Jenkinsfile` as the script path in a Jenkins Multibranch Pipeline job.
 3. Keep the script path as `Jenkinsfile`
 4. Enable branch discovery and pull request discovery
 5. Run `Scan Multibranch Pipeline Now`
+
+## Kubernetes cloud-agent setup
+
+If you want Jenkins to run in Kubernetes pods later, configure a Kubernetes cloud first and then switch the Jenkins job script path to one of the `.k8s` files.
