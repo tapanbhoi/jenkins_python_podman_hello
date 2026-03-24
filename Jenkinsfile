@@ -12,9 +12,9 @@ pipeline {
         PODMAN_BIN = "/opt/podman/bin/podman"
         ALLURE_BIN = "/opt/homebrew/bin/allure"
         PODMAN_MACHINE = "podman-machine-default"
+        VENV_DIR = "${WORKSPACE}/.venv"
         WORK_DIR = "${WORKSPACE}/work"
-        BUILD_OUTPUT_DIR = "${WORKSPACE}/build-output"
-        PACKAGE_SRC_DIR = "${WORKSPACE}/package-src"
+        ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
         ARTIFACT_DIR = "${WORKSPACE}/artifacts"
         IMAGE_DIR = "${WORKSPACE}/images"
         REPORT_DIR = "${WORKSPACE}/reports"
@@ -87,101 +87,76 @@ pipeline {
                     currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.EFFECTIVE_BRANCH_NAME}"
                     echo "Branch name: ${env.BRANCH_NAME ?: 'unset'}"
                     echo "Resolved branch: ${env.EFFECTIVE_BRANCH_NAME}"
+                    echo "Change request: ${env.CHANGE_ID ?: 'no'}"
                     echo "Image name: ${env.BRANCH_IMAGE_NAME}"
                     echo "Run package stages: ${env.RUN_PACKAGE_STAGES}"
                 }
             }
         }
 
-        stage('Prepare Static Workspace') {
+        stage('Prepare Workspace') {
             steps {
                 sh '''
                     set -euo pipefail
-                    rm -rf "${WORK_DIR}" "${BUILD_OUTPUT_DIR}" "${PACKAGE_SRC_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}" "${REPORT_DIR}"
-                    mkdir -p "${WORK_DIR}" "${BUILD_OUTPUT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
+                    rm -rf "${VENV_DIR}" "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}" "${REPORT_DIR}"
+                    mkdir -p "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${ARTIFACT_DIR}" "${IMAGE_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
+                    cp hello.py "${WORK_DIR}/hello.py"
                 '''
-                stash name: 'python-source', includes: 'hello.py,requirements.txt,pytest.ini,tests/**', useDefaultExcludes: false
             }
         }
 
-        stage('Build And Test On Kubernetes Agent') {
-            agent {
-                kubernetes {
-                    defaultContainer 'python'
-                    yaml '''
-apiVersion: v1
-kind: Pod
-spec:
-  containers:
-  - name: python
-    image: python:3.12-slim
-    command:
-    - cat
-    tty: true
-'''
-                }
-            }
-            environment {
-                PYTHON_BIN = "python3"
-                VENV_DIR = "${WORKSPACE}/.venv"
-                WORK_DIR = "${WORKSPACE}/work"
-                BUILD_OUTPUT_DIR = "${WORKSPACE}/build-output"
-                PACKAGE_SRC_DIR = "${WORKSPACE}/package-src"
-                REPORT_DIR = "${WORKSPACE}/reports"
-                JUNIT_DIR = "${WORKSPACE}/reports/junit"
-                ALLURE_RESULTS_DIR = "${WORKSPACE}/reports/allure-results"
-            }
+        stage('Setup Python Test Environment') {
             steps {
-                deleteDir()
-                unstash 'python-source'
                 sh '''
                     set -euo pipefail
-                    rm -rf "${VENV_DIR}" "${WORK_DIR}" "${BUILD_OUTPUT_DIR}" "${PACKAGE_SRC_DIR}" "${REPORT_DIR}"
-                    mkdir -p "${WORK_DIR}" "${BUILD_OUTPUT_DIR}" "${PACKAGE_SRC_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
-
                     "${PYTHON_BIN}" -m venv "${VENV_DIR}"
                     . "${VENV_DIR}/bin/activate"
                     python -m pip install --upgrade pip
                     python -m pip install -r requirements.txt
+                '''
+            }
+        }
 
-                    "${PYTHON_BIN}" hello.py | tee "${BUILD_OUTPUT_DIR}/hello-output.txt"
-                    cp hello.py "${BUILD_OUTPUT_DIR}/hello.py"
-                    cp hello.py "${PACKAGE_SRC_DIR}/hello.py"
-                    python -m zipapp "${PACKAGE_SRC_DIR}" -m "hello:main" -o "${BUILD_OUTPUT_DIR}/hello-app.pyz"
+        stage('Run Script On Agent') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    "${PYTHON_BIN}" "${WORK_DIR}/hello.py" | tee "${ARTIFACT_CONTENT_DIR}/hello-output.txt"
+                    cp "${WORK_DIR}/hello.py" "${ARTIFACT_CONTENT_DIR}/hello.py"
+                '''
+            }
+        }
 
+        stage('Verify Script And Generate Test Reports') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    . "${VENV_DIR}/bin/activate"
                     pytest -v \
                       --junitxml="${JUNIT_DIR}/results.xml" \
                       --alluredir="${ALLURE_RESULTS_DIR}"
 
-                    ls -lh "${BUILD_OUTPUT_DIR}"
-                '''
-                stash name: 'k8s-build-output', includes: 'build-output/**,reports/**', useDefaultExcludes: false
-            }
-        }
-
-        stage('Collect Kubernetes Build Output') {
-            steps {
-                unstash 'k8s-build-output'
-                sh '''
-                    set -euo pipefail
-                    tar -czf "${ARTIFACT_DIR}/hello-artifact.tar.gz" -C "${BUILD_OUTPUT_DIR}" .
-                    ls -lh "${ARTIFACT_DIR}/hello-artifact.tar.gz"
-                '''
-            }
-        }
-
-        stage('Generate Allure HTML On Static Agent') {
-            steps {
-                sh '''
-                    set -euo pipefail
-                    if [ -x "${ALLURE_BIN}" ] && [ -d "${ALLURE_RESULTS_DIR}" ]; then
+                    if [ -x "${ALLURE_BIN}" ]; then
                         "${ALLURE_BIN}" generate "${ALLURE_RESULTS_DIR}" --clean -o "${ALLURE_HTML_DIR}"
                     fi
                 '''
             }
         }
 
-        stage('Build Podman Image On Static Agent') {
+        stage('Create Artifact') {
+            when {
+                expression { env.RUN_PACKAGE_STAGES == 'true' }
+            }
+            steps {
+                sh '''
+                    set -euo pipefail
+                    tar -czf "${ARTIFACT_DIR}/hello-artifact.tar.gz" -C "${ARTIFACT_CONTENT_DIR}" .
+                    ls -lh "${ARTIFACT_DIR}/hello-artifact.tar.gz"
+                '''
+            }
+        }
+
+        stage('Build Podman Image') {
             when {
                 expression { env.RUN_PACKAGE_STAGES == 'true' }
             }
@@ -209,7 +184,7 @@ spec:
                     junit testResults: 'reports/junit/results.xml', allowEmptyResults: false
                 }
             }
-            archiveArtifacts artifacts: 'artifacts/*,images/*,reports/**/*,build-output/**/*', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'artifacts/*,images/*,reports/**/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
             script {
                 if (fileExists('reports/allure-results')) {
                     try {

@@ -7,8 +7,11 @@ pipeline {
     }
 
     environment {
+        PYTHON_BIN = "/usr/bin/python3"
         ALLURE_BIN = "/opt/homebrew/bin/allure"
-        BUILD_OUTPUT_DIR = "${WORKSPACE}/build-output"
+        VENV_DIR = "${WORKSPACE}/.venv"
+        WORK_DIR = "${WORKSPACE}/work"
+        ARTIFACT_CONTENT_DIR = "${WORKSPACE}/artifact-content"
         REPORT_DIR = "${WORKSPACE}/reports"
         JUNIT_DIR = "${WORKSPACE}/reports/junit"
         ALLURE_RESULTS_DIR = "${WORKSPACE}/reports/allure-results"
@@ -22,72 +25,49 @@ pipeline {
             }
         }
 
-        stage('Prepare Static Workspace') {
+        stage('Prepare Workspace') {
             steps {
                 sh '''
                     set -euo pipefail
-                    rm -rf "${BUILD_OUTPUT_DIR}" "${REPORT_DIR}"
-                    mkdir -p "${BUILD_OUTPUT_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
+                    rm -rf "${VENV_DIR}" "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${REPORT_DIR}"
+                    mkdir -p "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
+                    cp hello.py "${WORK_DIR}/hello.py"
                 '''
-                stash name: 'python-source', includes: 'hello.py,requirements.txt,pytest.ini,tests/**', useDefaultExcludes: false
             }
         }
 
-        stage('Verify On Kubernetes Agent') {
-            agent {
-                kubernetes {
-                    defaultContainer 'python'
-                    yaml '''
-apiVersion: v1
-kind: Pod
-spec:
-  containers:
-  - name: python
-    image: python:3.12-slim
-    command:
-    - cat
-    tty: true
-'''
-                }
-            }
-            environment {
-                PYTHON_BIN = "python3"
-                VENV_DIR = "${WORKSPACE}/.venv"
-                BUILD_OUTPUT_DIR = "${WORKSPACE}/build-output"
-                REPORT_DIR = "${WORKSPACE}/reports"
-                JUNIT_DIR = "${WORKSPACE}/reports/junit"
-                ALLURE_RESULTS_DIR = "${WORKSPACE}/reports/allure-results"
-            }
+        stage('Setup Python Test Environment') {
             steps {
-                deleteDir()
-                unstash 'python-source'
                 sh '''
                     set -euo pipefail
-                    rm -rf "${VENV_DIR}" "${BUILD_OUTPUT_DIR}" "${REPORT_DIR}"
-                    mkdir -p "${BUILD_OUTPUT_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
-
                     "${PYTHON_BIN}" -m venv "${VENV_DIR}"
                     . "${VENV_DIR}/bin/activate"
                     python -m pip install --upgrade pip
                     python -m pip install -r requirements.txt
-
-                    "${PYTHON_BIN}" hello.py | tee "${BUILD_OUTPUT_DIR}/hello-output.txt"
-                    cp hello.py "${BUILD_OUTPUT_DIR}/hello.py"
-
-                    pytest -v \
-                      --junitxml="${JUNIT_DIR}/results.xml" \
-                      --alluredir="${ALLURE_RESULTS_DIR}"
                 '''
-                stash name: 'k8s-verify-output', includes: 'build-output/**,reports/**', useDefaultExcludes: false
             }
         }
 
-        stage('Collect Verification Output') {
+        stage('Run Script On Agent') {
             steps {
-                unstash 'k8s-verify-output'
                 sh '''
                     set -euo pipefail
-                    if [ -x "${ALLURE_BIN}" ] && [ -d "${ALLURE_RESULTS_DIR}" ]; then
+                    "${PYTHON_BIN}" "${WORK_DIR}/hello.py" | tee "${ARTIFACT_CONTENT_DIR}/hello-output.txt"
+                    cp "${WORK_DIR}/hello.py" "${ARTIFACT_CONTENT_DIR}/hello.py"
+                '''
+            }
+        }
+
+        stage('Verify Script And Generate Test Reports') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    . "${VENV_DIR}/bin/activate"
+                    pytest -v \
+                      --junitxml="${JUNIT_DIR}/results.xml" \
+                      --alluredir="${ALLURE_RESULTS_DIR}"
+
+                    if [ -x "${ALLURE_BIN}" ]; then
                         "${ALLURE_BIN}" generate "${ALLURE_RESULTS_DIR}" --clean -o "${ALLURE_HTML_DIR}"
                     fi
                 '''
@@ -102,7 +82,7 @@ spec:
                     junit testResults: 'reports/junit/results.xml', allowEmptyResults: false
                 }
             }
-            archiveArtifacts artifacts: 'reports/**/*,build-output/**/*', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/**/*,artifact-content/*', fingerprint: true, allowEmptyArchive: true
             script {
                 if (fileExists('reports/allure-results')) {
                     try {

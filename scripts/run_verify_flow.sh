@@ -5,22 +5,24 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 ALLURE_BIN="${ALLURE_BIN:-/opt/homebrew/bin/allure}"
 VENV_DIR="${PROJECT_DIR}/.venv"
-BUILD_OUTPUT_DIR="${PROJECT_DIR}/build-output"
+WORK_DIR="${PROJECT_DIR}/work"
+ARTIFACT_CONTENT_DIR="${PROJECT_DIR}/artifact-content"
 REPORT_DIR="${PROJECT_DIR}/reports"
 JUNIT_DIR="${REPORT_DIR}/junit"
 ALLURE_RESULTS_DIR="${REPORT_DIR}/allure-results"
 ALLURE_HTML_DIR="${REPORT_DIR}/allure-html"
 
-rm -rf "${VENV_DIR}" "${BUILD_OUTPUT_DIR}" "${REPORT_DIR}"
-mkdir -p "${BUILD_OUTPUT_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
+rm -rf "${VENV_DIR}" "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${REPORT_DIR}"
+mkdir -p "${WORK_DIR}" "${ARTIFACT_CONTENT_DIR}" "${JUNIT_DIR}" "${ALLURE_RESULTS_DIR}"
 
 "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 . "${VENV_DIR}/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "${PROJECT_DIR}/requirements.txt"
 
-python "${PROJECT_DIR}/hello.py" | tee "${BUILD_OUTPUT_DIR}/hello-output.txt"
-cp "${PROJECT_DIR}/hello.py" "${BUILD_OUTPUT_DIR}/hello.py"
+cp "${PROJECT_DIR}/hello.py" "${WORK_DIR}/hello.py"
+python "${WORK_DIR}/hello.py" | tee "${ARTIFACT_CONTENT_DIR}/hello-output.txt"
+cp "${WORK_DIR}/hello.py" "${ARTIFACT_CONTENT_DIR}/hello.py"
 
 pytest -v \
     -c "${PROJECT_DIR}/pytest.ini" \
