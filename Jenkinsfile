@@ -34,42 +34,7 @@ pipeline {
         stage('Branch Context') {
             steps {
                 script {
-                    def rawBranch = env.BRANCH_NAME ?: env.GIT_LOCAL_BRANCH ?: env.GIT_BRANCH
-
-                    if (!rawBranch?.trim()) {
-                        rawBranch = sh(
-                            script: '''
-                                set -eu
-                                git symbolic-ref --short HEAD 2>/dev/null || true
-                            ''',
-                            returnStdout: true
-                        ).trim()
-                    }
-
-                    if (!rawBranch?.trim()) {
-                        rawBranch = sh(
-                            script: '''
-                                set -eu
-                                git for-each-ref --format='%(upstream:short)' "$(git symbolic-ref -q HEAD)" 2>/dev/null || true
-                            ''',
-                            returnStdout: true
-                        ).trim()
-                    }
-
-                    if (!rawBranch?.trim()) {
-                        rawBranch = sh(
-                            script: '''
-                                set -eu
-                                git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' | head -n1
-                            ''',
-                            returnStdout: true
-                        ).trim()
-                    }
-
-                    if (!rawBranch?.trim()) {
-                        rawBranch = 'manual'
-                    }
-
+                    def rawBranch = env.BRANCH_NAME ?: env.GIT_LOCAL_BRANCH ?: env.GIT_BRANCH ?: 'manual'
                     def effectiveBranch = rawBranch
                         .replaceFirst(/^refs\/heads\//, '')
                         .replaceFirst(/^origin\//, '')
